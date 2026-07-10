@@ -1,0 +1,51 @@
+menu "Modulino test firmware"
+
+    config MODULINO_WIFI_SSID
+        string "Wi-Fi station SSID"
+        default ""
+        help
+            SSID used by the boot-time Wi-Fi station connection test.
+            Leave empty to skip the test.
+
+    config MODULINO_WIFI_PASSWORD
+        string "Wi-Fi station password"
+        default ""
+        help
+            Password used by the boot-time Wi-Fi station connection test.
+            The firmware does not log or store this value in NVS.
+
+    config MODULINO_WIFI_CONNECT_TIMEOUT_MS
+        int "Wi-Fi connection timeout (ms)"
+        range 1000 60000
+        default 15000
+        help
+            Maximum time to wait for an IPv4 address.
+
+    config MODULINO_HUB_ID
+        string "Hub ID"
+        default "hub_test001"
+        help
+            Hub identifier used in the MQTT LWT topic and payload.
+
+    config MODULINO_MQTT_BROKER_URI
+        string "MQTT broker URI"
+        default "mqtt://172.20.10.3:1883"
+        help
+            Plain MQTT broker URI used by the boot-time connection test.
+            Leave empty to skip the test.
+
+    config MODULINO_MQTT_CONNECT_TIMEOUT_MS
+        int "MQTT connection timeout (ms)"
+        range 1000 60000
+        default 10000
+        help
+            Maximum time to wait for MQTT_EVENT_CONNECTED.
+
+    config MODULINO_MQTT_KEEPALIVE_SECONDS
+        int "MQTT keepalive (seconds)"
+        range 1 3600
+        default 10
+        help
+            Keepalive interval sent to the broker for LWT failure detection.
+
+endmenu

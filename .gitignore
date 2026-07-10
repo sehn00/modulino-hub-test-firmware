@@ -1,0 +1,12 @@
+build/
+mock_module_fw/build/
+
+sdkconfig
+sdkconfig.old
+mock_module_fw/sdkconfig
+mock_module_fw/sdkconfig.old
+
+compile_commands.json
+.vscode/
+
+*.log
