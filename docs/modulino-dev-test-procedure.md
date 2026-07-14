@@ -1,11 +1,11 @@
-# Modulino-dev Test Procedure
+# Modulino Hub Test Firmware Test Procedure
 
 ## Scope and Conventions
 
 이 절차는 처음 프로젝트를 접한 개발자가 Windows + WSL2에서 ESP32-S3 Hub,
 Marlin 기반 Ender-3 V3 SE, ESP32-C3 test-only mock module, Mosquitto 2.1.2를
-사용해 MVP 시험을 재현하기 위한 순서다. Printer UART 구현은 현재
-`READY_FOR_HW_TEST`이며 담당자가 실제 Printer에서 검증해야 한다.
+사용해 MVP 시험을 재현하기 위한 순서다. 실제 실행 결과와 증적은
+[Test Results](modulino-dev-test-results.md)에 기록한다.
 
 placeholder:
 
@@ -19,10 +19,9 @@ placeholder:
 | `<BROKER_IP>` | ESP32-S3가 접근 가능한 Windows adapter의 실제 IPv4 |
 | `<HUB_ID>` | menuconfig Hub ID, 기본 `hub_test001` |
 
-검증 환경의 예시 broker 주소가 `172.20.10.3`이더라도 다른 환경에서 그대로
-사용하지 않는다. Windows `ipconfig`로 ESP32-S3와 같은 네트워크의 실제 주소를
-확인한다. 실제 Wi-Fi SSID/password, MAC address, 개인 credential은 문서나
-시험 결과에 기록하지 않는다.
+Windows `ipconfig`로 ESP32-S3와 같은 네트워크의 실제 주소를 확인하고
+`<BROKER_IP>`를 바꾼다. 실제 Wi-Fi SSID/password, IP, MAC address, 개인
+credential은 문서나 시험 결과에 기록하지 않는다.
 
 필요 도구:
 
@@ -685,7 +684,8 @@ usbipd unbind --busid <C3_BUSID>
 ```
 
 보드 간 신호선을 변경하거나 제거할 때는 두 보드 USB 전원을 먼저 분리한다. 시험
-기록에는 `BUILD_VERIFIED`, `READY_FOR_HW_TEST`, `HW_VERIFIED`를 분리한다. 현재
-Printer 상태는 `READY_FOR_HW_TEST`이며 담당자가 실제 Ender-3 V3 SE에서 위 절차를
-수행하기 전에는 `HW_VERIFIED`로 기록하지 않는다. mock discovery와 Parts UART
-handshake도 actual Parts Module 검증으로 기록하지 않는다.
+기록에는 `BUILD_VERIFIED`, `READY_FOR_HW_TEST`, `HW_VERIFIED`를 분리한다. 실제
+Ender-3 V3 SE에서 위 절차를 수행하고 증적을 확보하기 전에는 Printer 결과를
+`HW_VERIFIED`로 기록하지 않는다. mock discovery와 Parts UART handshake도 actual
+Parts Module 검증으로 기록하지 않는다. 결과는
+[Test Results](modulino-dev-test-results.md)의 record schema에 새 행으로 추가한다.
