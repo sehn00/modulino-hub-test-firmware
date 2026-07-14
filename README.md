@@ -1,277 +1,220 @@
 # Modulino-dev Test Firmware
 
-ESP32-S3 Hub의 부팅, 저장소, 네트워크, MQTT, mock Printer RPC, test-only
-Parts UART 경로를 실제 보드에서 검증하기 위한 ESP-IDF CLI 프로젝트다.
+ESP32-S3 Hub의 NVS, Wi-Fi, MQTT, Parts Module test UART와 실제 3D Printer
+UART 경로를 검증하기 위한 ESP-IDF test firmware다. Printer 경로는 Marlin 기반
+Ender-3 V3 SE를 대상으로 `M105`, `M114`, `M115` SAFE_READ 명령만 허용한다.
 
-이 저장소의 firmware는 **test firmware**다. 제품용 장애 복구, 보안, 실제
-Printer 제어, 실제 Parts Module protocol을 제공하는 product firmware가 아니다.
-mock 결과를 실제 장치 통신 검증 결과로 해석해서는 안 된다.
+현재 상태는 다음과 같다.
 
-상세 시험 항목과 재현 절차는 다음 문서를 참고한다.
+- `BUILD_VERIFIED`: ESP-IDF 5.5.2, ESP32-S3 target에서 `idf.py build` 성공
+- `READY_FOR_HW_TEST`: 실제 Printer UART 구현과 시험 절차 준비 완료
+- `HW_VERIFIED` 아님: Ender-3 V3 SE 연결 시험은 담당자가 수행해야 함
+
+빌드 성공이나 UART driver 초기화 성공을 실제 Printer 통신 PASS로 해석하면 안 된다.
+`modules/discovery`는 기존 mock 동작(`source=mock`, 빈 module 목록)을 유지한다.
+
+상세 판정 기준과 단계별 절차는 다음 문서를 참고한다.
 
 - [Test plan](docs/modulino-dev-test-plan.md)
 - [Test procedure](docs/modulino-dev-test-procedure.md)
 
-## System Overview
+## Printer UART configuration
 
-```text
-Windows Host
-  Mosquitto 2.1.2 :1883
-          ^
-          | Wi-Fi / plain MQTT (local development only)
-          v
-ESP32-S3 Hub                                      ESP32-C3 mock module
-  test firmware                                     test-only firmware
-  UART0 console GPIO43/44                           USB Serial/JTAG console
-  UART1 TX GPIO17  ------------------------------>  UART1 RX GPIO20
-  UART1 RX GPIO18  <------------------------------  UART1 TX GPIO21
-  GND              ------------------------------   GND
-```
+baud rate를 제외한 설정은 firmware에 고정되어 있으며 menuconfig 항목이 아니다.
 
-두 보드는 각자의 USB로 전원을 공급한다. 보드 사이에는 TX, RX, GND만 연결하며
-VCC, 5V, 3.3V 전원 핀은 연결하지 않는다.
-
-## Confirmed Environment
-
-| 구분 | 환경 |
+| 항목 | 설정 |
 |---|---|
-| Hub | ESP32-S3, ESP-IDF 5.5.2, physical flash 16MB |
-| Hub partition | NVS 24KB, `phy_init` 4KB, factory app 4MB, OTA 없음 |
-| Hub console | UART0, GPIO43/44 |
-| Mock module | ESP32-C3, 독립 프로젝트 `mock_module_fw/` |
-| Mock console | USB Serial/JTAG |
-| Parts UART | UART1, 115200 baud, 8N1, parity 없음, flow control 없음 |
-| Host | Windows + WSL2, Mosquitto 2.1.2, development port 1883 |
+| UART controller | `UART_NUM_2` |
+| Hub TX | GPIO7 |
+| Hub RX | GPIO8 |
+| frame | 8 data bits, parity none, 1 stop bit |
+| flow control | none |
+| TX line ending | LF (`\n`) |
+| terminal response timeout | 3000 ms |
+| default baud rate | 115200 |
+| selectable baud rates | 9600, 19200, 38400, 57600, 115200, 250000 |
+| printer ID | `prt_test001` |
 
-문서의 `<BROKER_IP>`, `<HUB_PORT>`, `<C3_PORT>`, `<BUSID>`는 환경별
-placeholder다. `172.20.10.3`과 같은 주소는 검증 환경의 예시일 뿐이며 실제
-Windows 네트워크 adapter 주소를 확인해 대체해야 한다.
+UART0는 console, UART1은 Parts Module test용, UART2는 Printer 전용이다.
 
-## MVP Scope
+## Wiring
 
-현재 구현 범위:
+전원을 끈 상태에서 TX/RX를 교차하고 GND를 공통 연결한다.
 
-- ESP32-S3 boot log와 interactive Serial CLI
-- NVS 초기화 결과 저장과 조회, 자동 erase 없음
-- Wi-Fi station 연결 및 IPv4 할당 제한시간 시험
-- plain MQTT broker 연결, QoS 1 retained LWT, keepalive 기본 10초
-- MQTT 초기 `status`, `birth`, mock `modules/discovery`, `logs` publish
-- 5초 주기 `heartbeat`, 3초 주기 mock `printer/status` publish
-- boot마다 생성되는 `boot_id`와 모든 Hub-originated publish가 공유하는 전역 `seq`
-- MQTT RPC subscribe와 queue/worker 기반 request 처리
-- `printer.gcode.run`의 `M105`, `M114`, `M115` SAFE_READ mock 실행
-- ESP32-C3와 `MODULINO_PING`/`MODULINO_PONG` test-only UART handshake
-
-현재 제외 범위:
-
-- 실제 Printer UART 송수신 및 실제 측정값
-- 실제 Parts Module discovery/version/production protocol
-- duplicate RPC command ID deduplication
-- TLS, MQTT ACL, provisioning, credential NVS 저장
-- 제품 수준 자동 reconnect와 장애 복구
-- device time synchronization
-- OTA partition과 OTA update
-
-## Repository Layout
-
-| 경로 | 역할 |
+| ESP32-S3 Hub | Printer UART side |
 |---|---|
-| `main/app_main.c` | Hub boot 순서: NVS, Wi-Fi, MQTT, publish, RPC, CLI 시작 |
-| `main/test_result.c/.h` | PASS, FAIL, SKIP, NOT_SUPPORTED 결과 출력 API |
-| `main/serial_cli.c/.h` | console line input, echo, 명령 dispatch, `test all` |
-| `main/nvs_test.c/.h` | `nvs_flash_init()` 1회 실행과 결과 저장 |
-| `main/wifi_test.c/.h` | Wi-Fi STA 연결 및 IPv4 결과 저장 |
-| `main/mqtt_test.c/.h` | MQTT 연결, LWT, keepalive, client 보관 |
-| `main/mqtt_publish.c/.h` | 초기/주기 topic publish, `boot_id`, 공유 `seq` |
-| `main/mqtt_rpc.c/.h` | RPC subscribe, fragment 재조립, validation, worker, 응답 |
-| `main/gcode_safety.c/.h` | M105/M114/M115만 SAFE_READ로 분류 |
-| `main/printer_comm.c/.h` | Printer mock 응답, 실제 UART는 NOT_SUPPORTED |
-| `main/module_uart_test.c/.h` | ESP32-S3 UART1 PING/PONG handshake 시험과 최근 결과 |
-| `partitions.csv` | 4MB factory app을 포함한 Hub custom partition table |
-| `sdkconfig.defaults` | Hub 16MB flash와 custom partition 기본 설정 |
-| `mock_module_fw/` | ESP32-C3 test-only mock Parts Module 독립 프로젝트 |
-| `docs/` | test plan과 단계별 재현 절차 |
+| GPIO7 TX | RX |
+| GPIO8 RX | TX |
+| GND | GND |
 
-## Build, Flash, Monitor
+TX-TX 또는 RX-RX로 연결하지 않는다. Printer 쪽 connector pinout과 전기적 신호
+레벨은 해당 장비/보드 자료와 실제 측정으로 별도 확인해야 하며, 확인되지 않은 전원
+핀을 연결하지 않는다.
 
-ESP-IDF 5.5.2 환경을 export한다. 설치 위치는 로컬 환경에 맞게 바꾼다.
+## Configure, build, flash, monitor
+
+ESP-IDF 5.5.2 환경을 준비한다.
 
 ```bash
 source "$HOME/esp/v5.5.2/esp-idf/export.sh"
-idf.py --version
+cd <REPO_ROOT>
+idf.py menuconfig
 ```
 
-Hub ESP32-S3:
+`Modulino test firmware` → `Printer UART baud rate`에서 Printer와 동일한 baud를
+선택한다. 기본값은 115200이다. 저장 후 다음을 실행한다.
 
 ```bash
-cd /path/to/modulino_test_fw
 idf.py build
 idf.py -p <HUB_PORT> flash monitor
 ```
 
-Mock ESP32-C3:
+monitor 종료는 `Ctrl+]`다. build 성공은 `BUILD_VERIFIED`이고, 실제 UART 시험의
+정상 `ok` 응답을 확인해야 해당 명령을 hardware PASS로 기록할 수 있다.
 
-```bash
-cd /path/to/modulino_test_fw/mock_module_fw
-idf.py build
-idf.py -p <C3_PORT> flash monitor
+## CLI Printer test
+
+Hub monitor에서 다음 명령을 각각 실행한다.
+
+```text
+modulino> printer m105
+modulino> printer m114
+modulino> printer m115
 ```
 
-ESP32-C3 target은 `mock_module_fw/CMakeLists.txt`에 `esp32c3`로 고정되어 있다.
-monitor 종료 키는 `Ctrl+]`다. 두 장치를 동시에 monitor할 경우 별도 WSL terminal을
-사용한다.
+세 명령은 mock이 아니라 `printer_comm_uart_query()`를 실행한다. 성공 예시의 응답
+내용은 실제 Printer firmware와 상태에 따라 달라지므로 문서에서 값을 고정하지 않는다.
 
-## Menuconfig
-
-Hub root에서 실행한다.
-
-```bash
-idf.py menuconfig
+```text
+[PRINTER UART] M105 PASS
+<raw response ending in an ok line>
 ```
 
-`Modulino test firmware` menu의 설정:
+`M115`처럼 여러 줄인 응답도 terminal `ok` line까지 줄 내용을 보존해 출력한다.
+CR, LF, CRLF는 모두 줄 구분자로 처리하고 빈 줄은 무시한다. 성공 terminal line은
+정확히 `ok`이거나 `ok` 다음 문자가 space/tab인 경우만 허용하며, `okay`와
+`okerror`는 성공이 아니다.
 
-| 설정 | 기본값 | 설명 |
-|---|---:|---|
-| Wi-Fi station SSID | 빈 문자열 | 비어 있으면 Wi-Fi test SKIP |
-| Wi-Fi station password | 빈 문자열 | firmware가 로그에 출력하거나 NVS에 저장하지 않음 |
-| Wi-Fi connection timeout | 15000ms | IPv4 할당 대기 제한시간 |
-| Hub ID | `hub_test001` | MQTT topic과 payload의 Hub 식별자 |
-| MQTT broker URI | 예시 `mqtt://172.20.10.3:1883` | 실제 값은 `mqtt://<BROKER_IP>:1883`; 비어 있으면 SKIP |
-| MQTT connection timeout | 10000ms | `MQTT_EVENT_CONNECTED` 대기 제한시간 |
-| MQTT keepalive | 10초 | 비정상 연결 종료와 LWT 감지에 사용 |
+실패는 다음처럼 분리된다.
 
-실제 SSID/password는 문서, source, commit에 넣지 않는다. Hub `sdkconfig`는
-`.gitignore` 대상이며 credential은 Wi-Fi RAM storage로 사용된다.
-
-## Serial CLI
-
-| 명령 | 동작 |
+| code/상황 | 판정 |
 |---|---|
-| `help` | 지원 명령 출력 |
-| `test all` | 부팅 시 저장된 결과와 Parts UART의 최근 실행 결과 출력 |
-| `test module uart` | RX flush 후 PING/PONG handshake를 최대 1000ms 수행 |
-| `printer m105` | M105 mock 응답 출력 |
-| `printer m114` | M114 mock 응답 출력 |
-| `printer m115` | M115 mock 응답 출력 |
+| terminal line이 정확히 `ok` 또는 `ok` 뒤 space/tab | PASS |
+| 3000 ms 내 terminal line 없음 / `printer_timeout` | FAIL |
+| line이 `Error:`로 시작 / `printer_error` | FAIL; 수신한 raw response 출력 |
+| caller response buffer 초과 / `response_overflow` | FAIL |
+| initialization, RX flush, write, TX wait, read 오류 / `uart_error` | FAIL |
 
-`test module uart`를 실행하지 않은 상태에서 `test all`은 Parts UART를
-`SKIP - test not run`으로 출력한다. 실제 Printer UART test는 항상
-`NOT_SUPPORTED`다.
+`test all`은 실제 G-code를 자동 송신하지 않는다. 아직 CLI 또는 RPC transaction을
+실행하지 않았으면 `READY_FOR_HW_TEST`와 SKIP을 표시한다. 기존 mock query는 회귀
+검사용으로만 남아 있고 `printer m105/m114/m115`의 기본 경로가 아니다.
 
-## MQTT Topics
+## Safety and transaction behavior
 
-모든 topic prefix는 `modulino/local/v1/{hub_id}`다.
+- `gcode_safety`는 `M105`, `M114`, `M115`만 SAFE_READ로 분류한다.
+- MQTT가 미리 validation하더라도 `printer_comm`이 mutex 안에서 송신 직전에 다시
+  검사한다.
+- 허용 명령은 canonical command로 바뀌므로 추가 token이나 여러 명령이 UART write에
+  포함되지 않는다.
+- transaction 시작 전 UART2 RX input을 flush한다.
+- CLI task와 MQTT RPC worker는 하나의 FreeRTOS mutex를 공유해 동시에 UART를
+  사용하지 못한다.
+- write 길이와 `uart_wait_tx_done()` 결과를 확인한 뒤 수신을 시작한다.
+- 여러 줄을 모으고 유효한 `ok` 경계 또는 `Error:...` terminal line에서 종료한다.
 
-| Suffix | 방향 | QoS | Retain | 동작 |
-|---|---|---:|---:|---|
-| `status` | Hub -> Host | 1 | true | 연결 후 online; 비정상 종료 시 broker가 offline LWT 발행 |
-| `birth` | Hub -> Host | 1 | true | firmware/protocol/reset 정보, boot당 1회 |
-| `modules/discovery` | Hub -> Host | 1 | true | `source=mock`, `scan_id=scan_mock001`, `modules=[]` |
-| `logs` | Hub -> Host | 0 | false | `mqtt_connected` info event, 연결 직후 1회 |
-| `heartbeat` | Hub -> Host | 0 | false | 5초 주기 uptime, free heap, Wi-Fi RSSI |
-| `printer/status` | Hub -> Host | 0 | false | 3초 주기, `prt_mock001`, `connection=disconnected`, `source=mock` |
-| `rpc/request` | Host -> Hub | 1 | 사용 금지 | retained request는 실행하지 않고 폐기 |
-| `rpc/progress` | Hub -> Host | 1 | false | 안전한 요청의 `accepted` progress |
-| `rpc/response` | Hub -> Host | 1 | false | `completed` result 또는 `rejected` error |
+## MQTT RPC Printer test
 
-정상 Hub payload에는 동일 boot 동안 유지되는 `boot_id`, 전역 단조 증가 `seq`,
-`device_ts=null`, `ts_quality=unsynced`가 포함된다. 현재 `boot_id`는
-`boot_` 뒤에 lowercase random hex identifier가 붙는다. LWT는 broker가 대신
-발행하므로 `boot_id`와 `seq`를 포함하지 않는다.
+Request topic:
 
-## RPC Overview
+```text
+modulino/local/v1/<HUB_ID>/rpc/request
+```
 
-현재 지원 method는 `printer.gcode.run` 하나다. 요청은 JSON-RPC 2.0 style이며
-Host-originated request이므로 Hub 공통 envelope를 요구하지 않는다.
+단일 명령 payload 예시:
 
 ```json
 {
   "jsonrpc": "2.0",
   "method": "printer.gcode.run",
   "params": {
-    "printer_id": "prt_mock001",
+    "printer_id": "prt_test001",
     "script": "M105"
   },
-  "id": "cmd_test001"
+  "id": "cmd_m105_001"
 }
 ```
 
-M105, M114, M115만 기존 G-code safety와 Printer mock 경로로 실행한다. 안전한
-요청은 `accepted` progress 뒤 `completed` response를 발행한다. G1, M104, G28
-등은 `unclassified_gcode`, 미지원 method는 `unsupported_method`, 잘못된 JSON은
-`invalid_json`으로 progress 없이 거부한다. ID를 파싱하지 못하면 response의
-`id`는 `null`이다.
+`script`에는 CR, LF 또는 CRLF로 구분한 최대 10개 명령을 넣을 수 있지만 각 line은
+정확히 M105/M114/M115 중 하나여야 한다. validation 성공 후 다음 순서로 발행한다.
 
-M105는 MQTT request publish부터 progress/response의 Host 수신까지 mock RPC
-end-to-end로 실제 검증됐다. M114/M115는 구현되어 있고 Serial CLI의 Printer mock
-경로도 확인됐지만, MQTT RPC end-to-end Host 수신 증적은 아직 없다. M105 검증
-결과를 M114/M115까지 확대 해석하지 않는다.
+1. `rpc/progress`: `progress.status="accepted"`
+2. UART2 transaction을 line 순서대로 실행
+3. 모두 성공하면 `rpc/response`: `result.status="completed"`,
+   `result.source="uart"`, `result.raw_response=<실제 응답>`
 
-제한값은 request payload 8KB, script 2048 bytes, 최대 10 lines, line당 128
-bytes다. MQTT fragmented payload는 재조립 후 worker task에서 처리한다.
+실행 중 실패는 accepted 이후 `error.data.status="failed"` response로 발행한다.
+`error.code`는 `printer_timeout`, `printer_error`, `uart_error`,
+`response_overflow` 등으로 구분한다. Printer `Error:`인 경우 가능한 raw response를
+`error.data.raw_response`에 보존한다. validation 전에 발견한 invalid JSON, 잘못된
+printer ID, unsafe G-code만 `rejected`이며 accepted progress가 없어야 한다.
 
-## Test Result States
+unsafe 예시:
 
-| 상태 | 의미 |
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "printer.gcode.run",
+  "params": {
+    "printer_id": "prt_test001",
+    "script": "G28"
+  },
+  "id": "cmd_unsafe_001"
+}
+```
+
+기대 결과는 `error.code="unclassified_gcode"`,
+`error.data.status="rejected"`, accepted progress 없음, UART write 없음이다.
+
+## Printer status
+
+`printer/status`와 RPC는 공통 Printer ID `prt_test001`을 사용하고 status source는
+`uart`다. 별도 polling이나 health-check는 수행하지 않고 UART initialization 실패
+또는 최근 UART transaction 결과만 반영한다.
+
+| 최근 결과 | connection | reason 예시 |
+|---|---|---|
+| initialization 성공, transaction 없음 | `unknown` | `not_tested` |
+| initialization 실패 | `disconnected` | `uart_initialization_error` |
+| terminal `ok` | `connected` | `last_transaction_ok` |
+| terminal `Error:` | `connected` | `printer_error` |
+| response overflow | `connected` | `response_overflow` |
+| timeout | `disconnected` | `printer_timeout` |
+| UART initialization/runtime error | `disconnected` | 해당 UART error reason |
+
+Printer가 명시적인 `Error:`를 보낸 경우 통신 연결은 성립했으므로 connection은
+`connected`이지만 transaction 판정은 FAIL이다.
+
+## Project layout
+
+| 경로 | 역할 |
 |---|---|
-| PASS | 해당 실행에서 기대 동작을 관찰함 |
-| FAIL | 실행했으나 초기화, 연결, timeout, 응답 또는 validation 결과가 기대와 다름 |
-| SKIP | 필수 설정/선행 연결이 없거나 아직 해당 runtime test를 실행하지 않음 |
-| NOT_SUPPORTED | 현재 test firmware에 의도적으로 구현되지 않은 기능 |
+| `main/app_main.c` | boot sequence와 Printer UART 명시적 초기화 |
+| `main/printer_comm.c/.h` | UART2 transaction, mutex, result/status API, mock 회귀 helper |
+| `main/gcode_safety.c/.h` | M105/M114/M115 SAFE_READ allowlist |
+| `main/serial_cli.c/.h` | console CLI와 실제 Printer 명령 |
+| `main/mqtt_rpc.c/.h` | JSON-RPC validation, accepted/completed/failed 처리 |
+| `main/mqtt_publish.c/.h` | Hub publish와 최근 UART 기반 printer/status |
+| `main/Kconfig.projbuild` | Wi-Fi/MQTT 설정과 Printer baud choice |
+| `main/module_uart_test.c/.h` | 별도 UART1 Parts Module test handshake |
+| `mock_module_fw/` | 기존 ESP32-C3 Parts Module test-only mock firmware |
 
-빌드 성공은 compile/link/partition 적합성만 의미한다. PASS로 기록된 실제 보드
-시험과 동일한 의미가 아니다.
+## Verification record rule
 
-## Verified on Hardware
+시험 기록에는 다음을 분리한다.
 
-다음 연결 및 보드 동작이 실제 환경에서 확인됐다.
+- `BUILD_VERIFIED`: `idf.py build` 성공과 binary 생성
+- `READY_FOR_HW_TEST`: 코드와 절차 준비, 실기기 결과 없음
+- `HW_VERIFIED`: 담당자가 실제 Ender-3 V3 SE에서 명령별 raw response와 판정을 기록한
+  뒤에만 사용
 
-- Wi-Fi IPv4 할당 PASS
-- MQTT broker connect PASS
-- Parts UART PING/PONG 5회 연속 PASS
-
-다음 항목은 Host MQTT subscriber에서 payload를 실제 수신해 확인했다.
-
-- MQTT LWT offline actual publish PASS
-- heartbeat 5초 주기 수신 PASS
-- mock printer/status 3초 주기 수신 PASS
-- 동일 boot에서 공통 `boot_id`와 전역 단조 증가 `seq` 확인
-- M105 RPC `accepted` -> `completed` PASS
-- invalid JSON의 `invalid_json`, `id=null` rejection PASS
-- G1 `unclassified_gcode` rejection PASS
-- 미지원 method의 `unsupported_method` rejection PASS
-
-초기 `status` online, `birth`, mock `modules/discovery`, `logs`는 firmware의
-`mqtt initial publish PASS - status,birth,modules,logs queued`를 통해 네 publish
-요청의 client queue 등록 성공까지 확인했다. 현재 문서 작성 기준으로 각 topic의
-개별 Host subscriber 수신 증적은 확보되지 않았다. `mqtt initial publish PASS`는
-`esp_mqtt_client_enqueue()` 성공을 뜻하며 broker 수신, retain 적용 또는 subscriber
-수신 PASS를 의미하지 않는다.
-
-ESP32-C3 reset 직후 Hub가 C3 ready 이전에 handshake를 시작하면 첫 시도에서
-1회 timeout이 발생할 수 있다. C3 ready 확인 후 재실행하면 된다.
-
-## Spec Deviations / Product Firmware Blockers
-
-다음 항목은 단순한 test firmware 편의사항이 아니다. v0.1 통신 사양을 준수하는
-product firmware로 넘어가기 전에 해결해야 하는 사양 차이와 blocker다.
-
-- v0.1 사양에서 요구하는 duplicate RPC command ID deduplication이 구현되지 않았다.
-  동일한 command ID를 다시 보내면 현재 test firmware는 다시 실행한다.
-- v0.1 제품 동작에 필요한 MQTT 자동 재연결과 장애 복구가 구현되지 않았다.
-- 현재 `boot_id`는 `boot_` + 32자리 lowercase hexadecimal이며, v0.1 식별자
-  정책의 lowercase base32/base36 형식과 다르다.
-- 실제 Printer 통신과 실제 Parts Module discovery/version protocol은 구현되지 않았다.
-- TLS, MQTT ACL, provisioning이 구현되지 않아 product security 및 credential
-  lifecycle 요구사항을 충족하지 않는다.
-
-## Known Limitations
-
-- M105/M114/M115 응답과 printer/status는 test-only Printer mock이다.
-- Parts UART PING/PONG은 test-only handshake이며 실제 Parts Module protocol이 아니다.
-- device time synchronization이 없어 `device_ts=null`, `ts_quality=unsynced`다.
-- OTA partition이 없다.
-- mock discovery는 항상 `modules=[]`다.
-- Windows broker의 `allow_anonymous true`는 격리된 local development에서만 허용한다.
-- C3와 Hub 동시 부팅 시 C3 ready 이전 handshake는 timeout될 수 있다.
+현재 저장소 상태는 `BUILD_VERIFIED` + `READY_FOR_HW_TEST`이며 `HW_VERIFIED`가 아니다.

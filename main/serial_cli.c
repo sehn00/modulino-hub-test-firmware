@@ -20,8 +20,8 @@
 #include "wifi_test.h"
 
 #define SERIAL_CLI_LINE_SIZE 96
-#define SERIAL_CLI_RESPONSE_SIZE 192
-#define SERIAL_CLI_TASK_STACK_SIZE 4096
+#define SERIAL_CLI_RESPONSE_SIZE 2048
+#define SERIAL_CLI_TASK_STACK_SIZE 6144
 #define SERIAL_CLI_TASK_PRIORITY 5
 
 static bool streq(const char *left, const char *right)
@@ -65,6 +65,12 @@ static void run_all_tests(void)
 
     test_result_print("gcode_safety G28", gcode_safety_classify("G28") == GCODE_SAFETY_NOT_SUPPORTED ? TEST_RESULT_PASS : TEST_RESULT_FAIL,
                       gcode_safety_to_string(gcode_safety_classify("G28")));
+    test_result_print("gcode_safety injected line",
+                      gcode_safety_classify("M105\nG28") == GCODE_SAFETY_NOT_SUPPORTED ? TEST_RESULT_PASS : TEST_RESULT_FAIL,
+                      gcode_safety_to_string(gcode_safety_classify("M105\nG28")));
+    test_result_print("gcode_safety extra token",
+                      gcode_safety_classify("M105 S1") == GCODE_SAFETY_NOT_SUPPORTED ? TEST_RESULT_PASS : TEST_RESULT_FAIL,
+                      gcode_safety_to_string(gcode_safety_classify("M105 S1")));
 
     err = printer_comm_mock_query("M105", response, sizeof(response));
     test_result_print("printer_mock M105", err == ESP_OK ? TEST_RESULT_PASS : TEST_RESULT_FAIL, esp_err_to_name(err));
@@ -75,8 +81,23 @@ static void run_all_tests(void)
     err = printer_comm_mock_query("M115", response, sizeof(response));
     test_result_print("printer_mock M115", err == ESP_OK ? TEST_RESULT_PASS : TEST_RESULT_FAIL, esp_err_to_name(err));
 
-    err = printer_comm_uart_query("M105", response, sizeof(response));
-    test_result_print("printer_uart real", err == ESP_ERR_NOT_SUPPORTED ? TEST_RESULT_NOT_SUPPORTED : TEST_RESULT_FAIL, esp_err_to_name(err));
+    printer_comm_result_t init_result = printer_comm_get_init_result();
+    test_result_print("printer_uart init",
+                      init_result == PRINTER_COMM_OK ? TEST_RESULT_PASS : TEST_RESULT_FAIL,
+                      init_result == PRINTER_COMM_OK
+                          ? "UART2 driver initialized; hardware not verified"
+                          : printer_comm_result_message(init_result));
+
+    printer_comm_result_t printer_result = printer_comm_get_last_result();
+    if (printer_result == PRINTER_COMM_NOT_TESTED) {
+        test_result_print("printer_uart hardware",
+                          TEST_RESULT_SKIP,
+                          "READY_FOR_HW_TEST - run printer m105, m114, or m115");
+    } else {
+        test_result_print("printer_uart hardware",
+                          printer_result == PRINTER_COMM_OK ? TEST_RESULT_PASS : TEST_RESULT_FAIL,
+                          printer_comm_result_message(printer_result));
+    }
 
     test_result_print("parts_module_uart handshake",
                       module_uart_test_get_result(),
@@ -107,13 +128,19 @@ static void handle_printer_command(const char *command)
     }
 
     char response[SERIAL_CLI_RESPONSE_SIZE];
-    esp_err_t err = printer_comm_mock_query(gcode, response, sizeof(response));
-    if (err != ESP_OK) {
-        test_result_print(gcode, TEST_RESULT_FAIL, esp_err_to_name(err));
+    printer_comm_result_t result = printer_comm_uart_query(gcode, response, sizeof(response));
+    if (result != PRINTER_COMM_OK) {
+        printf("[PRINTER UART] %s FAIL - %s: %s\n",
+               gcode,
+               printer_comm_result_code(result),
+               printer_comm_result_message(result));
+        if (response[0] != '\0') {
+            printf("raw_response:\n%s\n", response);
+        }
         return;
     }
 
-    printf("[PRINTER MOCK] %s -> %s\n", gcode, response);
+    printf("[PRINTER UART] %s PASS\n%s\n", gcode, response);
 }
 
 static void handle_line(char *line)

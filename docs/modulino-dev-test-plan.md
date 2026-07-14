@@ -2,9 +2,10 @@
 
 ## 1. Purpose
 
-이 문서는 modulino-dev ESP32-S3 test firmware MVP의 시험 범위, 실행 조건,
-기대 결과와 판정 기준을 정의한다. 실제 Printer와 실제 Parts Module protocol은
-현재 범위가 아니며 mock 시험 결과와 구분한다.
+이 문서는 modulino-dev ESP32-S3 test firmware MVP의 전체 시험 범위, 실행 조건,
+기대 결과와 판정 기준을 정의한다. 기존 Hub/NVS/Wi-Fi/MQTT/Parts UART 시험 이력과
+현재 실제 Printer UART read-only 시험 계획을 함께 관리한다. 과거 mock 검증 결과와
+현재 UART2 구현의 hardware 검증 상태는 서로 구분한다.
 
 대상 환경:
 
@@ -12,6 +13,9 @@
 - Mock Parts Module: ESP32-C3, `mock_module_fw`, USB Serial/JTAG console
 - Host: Windows + WSL2, Mosquitto 2.1.2, local development port 1883
 - Parts UART: 115200 8N1, no parity, no flow control
+- Printer UART: UART2, Hub TX GPIO7, Hub RX GPIO8, 8N1, LF, 3000 ms timeout
+- Printer baud: menuconfig choice, 기본 115200
+- 실제 Printer 대상: Marlin 기반 Ender-3 V3 SE, hardware verification 미실행
 
 실제 IP, serial port, USB BUSID는 환경마다 달라진다. 문서의 placeholder를 실제
 환경 값으로 바꾸되 SSID/password, MAC address, 개인 credential은 시험 기록이나
@@ -26,13 +30,24 @@
 | SKIP | 필수 설정이나 선행 연결이 없거나 runtime 시험을 아직 실행하지 않음 |
 | NOT_SUPPORTED | 현재 test firmware 범위에서 의도적으로 구현하지 않음 |
 
-Build 성공은 source compile/link 및 image 생성 결과다. 아래의 `실제 검증 상태`는
-별도로 실제 보드나 Host subscriber에서 관찰한 결과다.
+검증 단계 표기는 다음과 같다.
+
+| 단계 | 의미 |
+|---|---|
+| BUILD_VERIFIED | source configure/compile/link 및 image 생성 성공 |
+| READY_FOR_HW_TEST | 실기기 시험 코드와 절차 준비 완료, 실제 결과 없음 |
+| HW_VERIFIED | 담당자가 실제 대상 장비에서 증적을 확보해 판정 완료 |
+
+현재 Printer UART 구현은 **BUILD_VERIFIED + READY_FOR_HW_TEST**이며
+**HW_VERIFIED가 아니다**. 아래의 과거 PASS/SKIP/NOT_SUPPORTED는 해당 시점에 실제
+보드나 Host subscriber에서 관찰한 이력이며, Printer UART hardware PASS로 확대
+해석하지 않는다.
 
 ## 3. Test Matrix
 
 | Test ID | Test item | 현재 실제 검증 상태 |
 |---|---|---|
+| MDT-BUILD-001 | ESP32-S3 firmware build | BUILD_VERIFIED |
 | MDT-BOOT-001 | Boot | PASS, 실제 ESP32-S3 |
 | MDT-LOG-001 | Serial log | PASS, 실제 ESP32-S3 monitor |
 | MDT-CLI-001 | Serial CLI | PASS, 실제 ESP32-S3 monitor |
@@ -45,17 +60,39 @@ Build 성공은 source compile/link 및 image 생성 결과다. 아래의 `실�
 | MDT-MQTT-005 | heartbeat | PASS, 5초 주기 수신 |
 | MDT-MQTT-006 | logs | SKIP, Host 수신 증적 미확보 (firmware enqueue PASS) |
 | MDT-MQTT-007 | mock modules/discovery | SKIP, Host 수신 증적 미확보 (firmware enqueue PASS) |
-| MDT-MQTT-008 | mock printer/status | PASS, 3초 주기 수신 |
+| MDT-MQTT-008 | mock printer/status | PASS, 3초 주기 수신 (pre-136e7bd historical mock record) |
 | MDT-RPC-001 | RPC subscribe | PASS, 실제 RPC 경로 동작 |
-| MDT-RPC-002 | M105 accepted/completed | PASS, Host subscriber |
+| MDT-RPC-002 | M105 accepted/completed | PASS, Host subscriber (pre-136e7bd historical mock record) |
 | MDT-RPC-003 | invalid JSON rejection | PASS, `invalid_json`, `id=null` |
 | MDT-RPC-004 | unsafe G-code rejection | PASS, G1 `unclassified_gcode` |
 | MDT-RPC-005 | unsupported method rejection | PASS, `unsupported_method` |
 | MDT-UART-001 | Parts UART mock handshake | PASS, 5회 연속 |
 | MDT-MODULE-001 | actual Parts Module protocol | NOT_SUPPORTED |
-| MDT-PRINTER-001 | actual Printer communication | NOT_SUPPORTED |
+| MDT-PRINTER-001 | actual Printer communication | NOT_SUPPORTED (pre-136e7bd historical state) |
+| MDT-PRINTER-UART-001 | UART initialization and idle state | BUILD_VERIFIED + READY_FOR_HW_TEST |
+| MDT-PRINTER-UART-002 | M105 actual UART | READY_FOR_HW_TEST |
+| MDT-PRINTER-UART-003 | M114 actual UART | READY_FOR_HW_TEST |
+| MDT-PRINTER-UART-004 | M115 multiline UART | READY_FOR_HW_TEST |
+| MDT-PRINTER-UART-005 | CR/LF/CRLF response handling | READY_FOR_HW_TEST |
+| MDT-PRINTER-SAFETY-001 | unsafe G-code default deny | BUILD_VERIFIED; hardware write 미검증 |
+| MDT-PRINTER-CONCURRENCY-001 | CLI/MQTT mutex serialization | READY_FOR_HW_TEST |
+| MDT-PRINTER-RPC-001 | RPC accepted → completed | READY_FOR_HW_TEST |
+| MDT-PRINTER-RPC-002 | RPC accepted → failed | READY_FOR_HW_TEST |
+| MDT-PRINTER-RPC-003 | validation rejection | 기존 rejection 이력 PASS; current UART 실행 없음 |
+| MDT-PRINTER-STATUS-001 | recent transaction printer/status | READY_FOR_HW_TEST |
 
 ## 4. Detailed Tests
+
+### MDT-BUILD-001: ESP32-S3 Firmware Build
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | 현재 source와 Kconfig가 ESP32-S3 image로 configure/compile/link되는지 확인 |
+| 사전조건 | ESP-IDF 5.5.2 export, target `esp32s3` |
+| 입력/실행 방법 | repository root에서 `idf.py build` |
+| 기대 결과 | `build/modulino_test_fw.bin` 생성, 4MB app partition 이내 |
+| 판정 기준 | BUILD_VERIFIED: build 성공; FAIL: configure/compile/link/partition 오류. 실제 Printer 통신 PASS로 판정하지 않음 |
+| 현재 실제 검증 상태 | **BUILD_VERIFIED** - Printer UART 구현 포함 build 성공 |
 
 ### MDT-BOOT-001: Boot
 
@@ -189,16 +226,16 @@ Build 성공은 source compile/link 및 image 생성 결과다. 아래의 `실�
 | 판정 기준 | PASS: Host subscriber에서 빈 mock 목록을 직접 수신하고 payload/retain 정책 확인; FAIL: 실제 module처럼 표현하거나 관찰한 payload/정책 불일치; SKIP: MQTT 미연결 또는 Host 수신 증적 미확보; NOT_SUPPORTED: actual discovery protocol. `[TEST] mqtt initial publish PASS`는 enqueue 성공 판정이며 broker 수신, retain 적용, subscriber 수신 PASS를 대신하지 않음 |
 | 현재 실제 검증 상태 | **SKIP** - Host 수신 증적 미확보 (firmware enqueue PASS) |
 
-### MDT-MQTT-008: Mock Printer/Status
+### MDT-MQTT-008: Mock Printer/Status (Historical, pre-136e7bd)
 
 | 항목 | 내용 |
 |---|---|
-| 목적 | 실제 Printer가 없음을 명시한 mock status를 3초 주기로 확인 |
+| 목적 | UART 구현 이전의 mock printer/status 3초 주기 검증 이력을 보존 |
 | 사전조건 | MQTT 연결 및 initial publish PASS |
 | 입력/실행 방법 | `{hub_id}/printer/status`를 최소 9초 관찰 |
 | 기대 결과 | `printer_id=prt_mock001`, `connection=disconnected`, `source=mock`, 3초 주기; QoS 0 retain false |
 | 판정 기준 | PASS: disconnected mock payload와 3초 주기; FAIL: connected/실측값으로 표현, 미수신 또는 주기 이상; SKIP: MQTT 미연결; NOT_SUPPORTED: actual Printer status |
-| 현재 실제 검증 상태 | **PASS (mock only)** - printer/status 3초 수신 확인 |
+| 현재 실제 검증 상태 | **PASS (mock only, historical)** - 당시 printer/status 3초 수신 확인. 현재 `source=uart` payload의 hardware 검증 결과가 아님 |
 
 ### MDT-RPC-001: RPC Subscribe
 
@@ -211,16 +248,16 @@ Build 성공은 source compile/link 및 image 생성 결과다. 아래의 `실�
 | 판정 기준 | PASS: SUBACK와 저장 결과 확인; FAIL: subscribe request/SUBACK/worker 실패; SKIP: MQTT 미연결; NOT_SUPPORTED: 적용하지 않음 |
 | 현재 실제 검증 상태 | **PASS** - 실제 RPC request 처리로 경로 확인 |
 
-### MDT-RPC-002: M105 Accepted/Completed
+### MDT-RPC-002: M105 Accepted/Completed (Historical Mock, pre-136e7bd)
 
 | 항목 | 내용 |
 |---|---|
-| 목적 | SAFE_READ M105가 progress 후 Printer mock 응답으로 완료되는지 확인 |
+| 목적 | UART 구현 이전 SAFE_READ M105의 mock accepted/completed 검증 이력을 보존 |
 | 사전조건 | RPC subscribe PASS, progress/response subscriber 실행 |
 | 입력/실행 방법 | `printer.gcode.run`, `printer_id=prt_mock001`, `script=M105`, string id를 QoS 1 publish |
 | 기대 결과 | 같은 id로 `progress.status=accepted`, 이어서 `result.status=completed`, `source=mock`, mock raw_response |
 | 판정 기준 | PASS: accepted -> completed 순서와 공통 boot_id/전역 seq 확인; FAIL: rejection/누락/순서/ID 불일치; SKIP: MQTT/RPC 미연결; NOT_SUPPORTED: actual Printer 실행 |
-| 현재 실제 검증 상태 | **PASS (mock end-to-end)** - M105 MQTT RPC accepted -> completed를 Host에서 확인. M114/M115는 구현 및 Serial CLI mock 확인, MQTT RPC end-to-end는 미검증 |
+| 현재 실제 검증 상태 | **PASS (mock end-to-end, historical)** - 당시 M105 MQTT RPC accepted -> completed를 Host에서 확인. M114/M115 MQTT RPC와 현재 actual UART path는 미검증 |
 
 ### MDT-RPC-003: Invalid JSON Rejection
 
@@ -277,16 +314,159 @@ Build 성공은 source compile/link 및 image 생성 결과다. 아래의 `실�
 | 판정 기준 | PASS: 적용하지 않음; FAIL: mock을 actual로 오표현하거나 의도치 않은 실제 명령 전송; SKIP: 적용하지 않음; NOT_SUPPORTED: 현재 정상 상태 |
 | 현재 실제 검증 상태 | **NOT_SUPPORTED** |
 
-### MDT-PRINTER-001: Actual Printer Communication
+### MDT-PRINTER-001: Actual Printer Communication (Historical, pre-136e7bd)
 
 | 항목 | 내용 |
 |---|---|
-| 목적 | 실제 Printer UART 송수신 지원 여부와 mock 경계를 명시 |
-| 사전조건 | 실제 Printer protocol/배선은 현재 범위에 없음 |
-| 입력/실행 방법 | `test all`의 `printer_uart real` 결과 확인 |
-| 기대 결과 | `NOT_SUPPORTED - ESP_ERR_NOT_SUPPORTED`; 실제 UART로 G-code를 보내지 않음 |
-| 판정 기준 | PASS: 적용하지 않음; FAIL: 실제 UART 송신 또는 mock을 실제 측정으로 표현; SKIP: 적용하지 않음; NOT_SUPPORTED: 현재 정상 상태 |
-| 현재 실제 검증 상태 | **NOT_SUPPORTED** - M105/M114/M115 결과는 mock only |
+| 목적 | UART 구현 이전 actual Printer 미지원 상태와 mock 경계를 역사 기록으로 보존 |
+| 사전조건 | commit `e82f67c` 기준 |
+| 입력/실행 방법 | 당시 `test all`의 `printer_uart real` 결과 확인 |
+| 기대 결과 | 당시 `NOT_SUPPORTED - ESP_ERR_NOT_SUPPORTED`; 실제 UART 송신 없음 |
+| 판정 기준 | 이 항목은 과거 상태 기록이며 현재 구현 판정에는 아래 신규 Printer 항목을 사용 |
+| 현재 실제 검증 상태 | **NOT_SUPPORTED (historical)** - commit `136e7bd`에서 구현으로 대체됐지만 actual hardware는 아직 미검증 |
+
+### Current Printer UART fixed interface
+
+| 항목 | 값 |
+|---|---|
+| UART controller | UART2 |
+| Hub pins | TX GPIO7, RX GPIO8 |
+| frame | 8N1, parity none, flow control none |
+| TX line ending | LF (`\n`) |
+| terminal response timeout | 3000 ms |
+| baud | menuconfig choice; 기본 115200 |
+| allowed G-code | M105, M114, M115 only |
+| printer ID/source | `prt_test001` / `uart` |
+
+다음 신규 항목은 모두 코드 build와 실기기 실행을 분리한다. 현재 공통 상태는
+**BUILD_VERIFIED + READY_FOR_HW_TEST**이며 **HW_VERIFIED가 아니다**.
+
+### MDT-PRINTER-UART-001: UART Initialization and Idle State
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | UART2 driver/mutex 초기화 결과와 transaction 전 상태가 정확히 구분되는지 확인 |
+| 사전조건 | firmware boot, MQTT printer/status subscriber는 선택 사항 |
+| 입력/실행 방법 | boot log, `test all`, `{hub_id}/printer/status` 확인 |
+| 기대 결과 | 초기화 성공 후 실제 transaction 전에는 `connection=unknown`, `reason=not_tested`; 초기화 실패 시 `connection=disconnected`, `reason=uart_initialization_error` |
+| 판정 기준 | FAIL: mutex 생성 또는 uart_param_config/uart_set_pin/uart_driver_install 실패. 초기화 성공만으로 actual Printer PASS를 기록하지 않음 |
+| 현재 실제 검증 상태 | **BUILD_VERIFIED + READY_FOR_HW_TEST** - success/failure 상태 경로 구현, hardware communication 미검증 |
+
+### MDT-PRINTER-UART-002: M105 Actual UART
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | 실제 Printer의 temperature/status read 응답을 terminal line까지 수집 |
+| 사전조건 | UART 교차 배선과 공통 GND, Printer와 같은 baud, UART 초기화 성공 |
+| 입력/실행 방법 | CLI `printer m105` 또는 MQTT `script=M105` |
+| 기대 결과 | 3000 ms 안에 line이 정확히 `ok`이거나 `ok` 다음 문자가 space/tab인 terminal response, raw response 보존 |
+| 판정 기준 | PASS: 허용된 terminal `ok` 경계 수신; FAIL: init/runtime UART 오류, timeout, `Error:`, overflow. 실제 값 자체는 고정하지 않음 |
+| 현재 실제 검증 상태 | **READY_FOR_HW_TEST** - Ender-3 V3 SE 미실행 |
+
+### MDT-PRINTER-UART-003: M114 Actual UART
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | 실제 Printer position read 응답을 terminal line까지 수집 |
+| 사전조건 | MDT-PRINTER-UART-002와 동일 |
+| 입력/실행 방법 | CLI `printer m114` 또는 MQTT `script=M114` |
+| 기대 결과 | 의미 있는 raw response와 유효한 terminal `ok` line |
+| 판정 기준 | MDT-PRINTER-UART-002와 동일; 실제 좌표값은 고정 기대값으로 사용하지 않음 |
+| 현재 실제 검증 상태 | **READY_FOR_HW_TEST** - Ender-3 V3 SE 미실행 |
+
+### MDT-PRINTER-UART-004: M115 Multiline UART
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | firmware information의 여러 line을 첫 line에서 중단하지 않고 모두 수집 |
+| 사전조건 | MDT-PRINTER-UART-002와 동일 |
+| 입력/실행 방법 | CLI `printer m115` 또는 MQTT `script=M115` |
+| 기대 결과 | 빈 line을 제외한 의미 있는 모든 line과 terminal `ok` line 보존 |
+| 판정 기준 | PASS: terminal response까지 전체 수집; FAIL: 첫 line 조기 종료, timeout, `Error:`, overflow, UART 오류 |
+| 현재 실제 검증 상태 | **READY_FOR_HW_TEST** - Ender-3 V3 SE 미실행 |
+
+### MDT-PRINTER-UART-005: CR/LF/CRLF Response Handling
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | CR, LF, CRLF 응답을 모두 line delimiter로 처리하고 빈 line을 무시 |
+| 사전조건 | 실제 Printer 또는 UART response fixture |
+| 입력/실행 방법 | 각 delimiter 형태의 multiline response 입력 |
+| 기대 결과 | 의미 있는 line을 `\n`으로 구분해 보존; `Error:`는 기존처럼 Printer 오류; 성공은 정확히 `ok` 또는 뒤따르는 space/tab만 허용 |
+| 판정 기준 | `okay`, `okerror`를 성공으로 처리하거나 의미 있는 line을 유실하면 FAIL |
+| 현재 실제 검증 상태 | **BUILD_VERIFIED + READY_FOR_HW_TEST** - parser build 성공, runtime 미검증 |
+
+### MDT-PRINTER-SAFETY-001: Unsafe G-code Default Deny
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | M105/M114/M115 외 입력이 UART write에 도달하지 않음을 확인 |
+| 사전조건 | CLI 또는 MQTT RPC 사용 가능 |
+| 입력/실행 방법 | `G28`, `G1 X10`, `M105\nG28`, 추가 token 포함 입력 |
+| 기대 결과 | NOT_SUPPORTED 또는 `unclassified_gcode/rejected`; accepted progress와 UART write 없음 |
+| 판정 기준 | MQTT validation과 mutex 내부 송신 직전 SAFE_READ 재검사를 모두 통과한 canonical 명령만 송신. unsafe input이 write에 도달하면 FAIL |
+| 현재 실제 검증 상태 | **BUILD_VERIFIED** - 과거 G1 rejection은 PASS; current UART write 차단은 코드 구조 확인, hardware 미검증 |
+
+### MDT-PRINTER-CONCURRENCY-001: CLI/MQTT Mutex Serialization
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | CLI task와 MQTT worker의 Printer transaction이 같은 UART2에서 섞이지 않도록 직렬화 |
+| 사전조건 | CLI와 MQTT RPC를 거의 동시에 실행할 수 있는 환경 |
+| 입력/실행 방법 | 양쪽에서 허용 명령을 겹쳐 요청하고 UART/응답 순서 관찰 |
+| 기대 결과 | 한 transaction이 terminal response 또는 timeout으로 끝난 뒤 다음 transaction 시작 |
+| 판정 기준 | frame/response 혼합 또는 동시 write는 FAIL. busy 즉시 거부 정책은 이번 범위가 아님 |
+| 현재 실제 검증 상태 | **BUILD_VERIFIED + READY_FOR_HW_TEST**, concurrent hardware 미실행 |
+
+### MDT-PRINTER-RPC-001: Accepted to Completed
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | 유효한 SAFE_READ RPC가 accepted 후 실제 UART 성공으로 completed되는지 확인 |
+| 사전조건 | RPC subscribe PASS, `printer_id=prt_test001`, progress/response subscriber |
+| 입력/실행 방법 | M105/M114/M115를 단일 또는 multiline script로 QoS 1 publish |
+| 기대 결과 | UART 시작 전 `progress.status=accepted`; 모든 line 성공 후 `result.status=completed`, `source=uart`, 실제 raw_response |
+| 판정 기준 | accepted → completed 순서, request id, boot_id/seq, line 순차 실행 확인 |
+| 현재 실제 검증 상태 | **READY_FOR_HW_TEST** - 과거 mock M105 PASS를 actual UART PASS로 사용하지 않음 |
+
+### MDT-PRINTER-RPC-002: Accepted to Failed
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | validation 이후 runtime 오류가 rejected가 아니라 accepted 이후 failed로 보고되는지 확인 |
+| 사전조건 | 각 오류를 재현할 수 있는 Printer/fixture 또는 배선 상태 |
+| 입력/실행 방법 | timeout, Printer `Error:`, UART 오류, response overflow 각각 실행 |
+| 기대 결과 | `error.data.status=failed`, `source=uart`; code는 `printer_timeout`, `printer_error`, `uart_error`, `response_overflow`로 구분 |
+| 판정 기준 | runtime 오류를 rejected로 발행하면 FAIL; Printer Error에서는 가능한 raw_response 보존 |
+| 현재 실제 검증 상태 | **READY_FOR_HW_TEST**, runtime failure path hardware 미실행 |
+
+### MDT-PRINTER-RPC-003: Validation Rejection
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | UART transaction 시작 전 validation 실패만 rejected로 처리 |
+| 사전조건 | RPC subscribe PASS |
+| 입력/실행 방법 | invalid JSON/params/printer ID, unsupported method, unsafe G-code publish |
+| 기대 결과 | accepted progress 없음, `error.data.status=rejected`, UART write 없음 |
+| 판정 기준 | 기존 `invalid_json`, `unclassified_gcode`, `unsupported_method` 결과와 validation 순서 유지 |
+| 현재 실제 검증 상태 | **기존 rejection 경로 PASS 기록 보존**; current UART backend와 결합한 hardware 실행은 필요 없음 |
+
+### MDT-PRINTER-STATUS-001: Recent Transaction Printer/Status
+
+| 최근 결과 | connection | reason |
+|---|---|---|
+| initialization 성공, transaction 없음 | `unknown` | `not_tested` |
+| initialization 실패 | `disconnected` | `uart_initialization_error` |
+| terminal `ok` 성공 | `connected` | `last_transaction_ok` |
+| terminal `Error:` | `connected` | `printer_error` |
+| response overflow | `connected` | `response_overflow` |
+| response timeout | `disconnected` | `printer_timeout` |
+| UART runtime 오류 | `disconnected` | 해당 UART reason |
+
+모든 current payload는 `printer_id=prt_test001`, `source=uart`여야 한다. 별도 polling이나
+health-check state machine은 만들지 않고 최근 transaction 결과만 반영한다.
+현재 실제 검증 상태는 **READY_FOR_HW_TEST**이며, historical mock printer/status 3초
+수신 PASS를 current UART status payload PASS로 확대하지 않는다.
 
 ## 5. Overall Verified Result
 
@@ -295,10 +475,16 @@ Build 성공은 source compile/link 및 image 생성 결과다. 아래의 `실�
 Host subscriber 수신 PASS가 아니다. 현재 문서 작성 기준으로 네 topic의 개별 Host
 수신 증적은 확보되지 않았다.
 
-heartbeat 5초 주기와 mock printer/status 3초 주기는 Host에서 실제 수신했다. MQTT
-LWT offline, 공통 boot_id/전역 seq, RPC M105와 rejection 경로, Parts UART
-PING/PONG도 실제 end-to-end로 확인했다. M114/M115 MQTT RPC, 실제 Printer 및 실제
-Parts Module protocol은 검증되지 않았다.
+pre-136e7bd 이력에서 heartbeat 5초 주기와 mock printer/status 3초 주기는 Host에서
+실제 수신했다. MQTT LWT offline, 공통 boot_id/전역 seq, mock RPC M105와 rejection
+경로, Parts UART PING/PONG도 실제 end-to-end로 확인했다. 이 기록은 삭제하지 않지만
+current UART2 Printer path의 PASS 증적은 아니다.
+
+commit `136e7bd` 이후 actual Printer UART2 구현은 build가 확인되어
+**BUILD_VERIFIED + READY_FOR_HW_TEST**다. 실제 Ender-3 V3 SE에서 M105/M114/M115,
+multiline/terminal parsing, runtime failure, mutex serialization 및 current UART
+printer/status를 실행하지 않았으므로 **HW_VERIFIED가 아니다**. 실제 Parts Module
+protocol은 계속 NOT_SUPPORTED다.
 
 ## 6. Spec Compliance Gaps
 
@@ -308,4 +494,5 @@ Parts Module protocol은 검증되지 않았다.
 - MQTT auto reconnect와 제품 수준 장애 복구가 구현되지 않았다.
 - 현재 `boot_id`는 `boot_` + 32자리 lowercase hexadecimal이며 v0.1의 lowercase
   base32/base36 식별자 정책과 다르다.
-- 실제 Printer 통신과 실제 Parts Module discovery/version protocol이 구현되지 않았다.
+- Printer UART 통신은 구현됐지만 actual Ender-3 V3 SE hardware verification이 남아 있다.
+- 실제 Parts Module discovery/version protocol은 구현되지 않았다.

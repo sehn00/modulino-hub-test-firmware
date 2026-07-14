@@ -17,10 +17,10 @@
 #include "sdkconfig.h"
 
 #include "mqtt_test.h"
+#include "printer_comm.h"
 
 #define MQTT_PUBLISH_FW_VERSION "0.1.0"
 #define MQTT_PUBLISH_PROTO_VERSION "1.0"
-#define MQTT_PUBLISH_PRINTER_ID "prt_mock001"
 #define MQTT_PUBLISH_SCAN_ID "scan_mock001"
 
 #define MQTT_PUBLISH_TOPIC_SIZE 128
@@ -292,10 +292,12 @@ static bool publish_printer_status(void)
         return false;
     }
 
-    if ((cJSON_AddStringToObject(root, "printer_id", MQTT_PUBLISH_PRINTER_ID) == NULL) ||
-        (cJSON_AddStringToObject(root, "connection", "disconnected") == NULL) ||
-        (cJSON_AddStringToObject(root, "source", "mock") == NULL) ||
-        (cJSON_AddStringToObject(root, "reason", "mock_printer_not_connected") == NULL) ||
+    printer_comm_result_t last_result = printer_comm_get_last_result();
+
+    if ((cJSON_AddStringToObject(root, "printer_id", printer_comm_get_printer_id()) == NULL) ||
+        (cJSON_AddStringToObject(root, "connection", printer_comm_result_connection(last_result)) == NULL) ||
+        (cJSON_AddStringToObject(root, "source", "uart") == NULL) ||
+        (cJSON_AddStringToObject(root, "reason", printer_comm_result_status_reason(last_result)) == NULL) ||
         !add_unsynced_time(root)) {
         cJSON_Delete(root);
         return false;

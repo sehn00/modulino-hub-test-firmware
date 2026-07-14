@@ -28,7 +28,7 @@
 #define MQTT_RPC_TOPIC_SIZE 128
 #define MQTT_RPC_RESPONSE_PAYLOAD_SIZE 9216
 #define MQTT_RPC_RAW_RESPONSE_SIZE 2048
-#define MQTT_RPC_MOCK_RESPONSE_SIZE 256
+#define MQTT_RPC_LINE_RESPONSE_SIZE 2048
 #define MQTT_RPC_DETAIL_SIZE 160
 #define MQTT_RPC_QUEUE_LENGTH 4
 #define MQTT_RPC_WORKER_STACK_SIZE 10240
@@ -39,7 +39,6 @@
 #define MQTT_RPC_DISCONNECTED_BIT BIT1
 
 #define MQTT_RPC_METHOD "printer.gcode.run"
-#define MQTT_RPC_PRINTER_ID "prt_mock001"
 
 typedef enum {
     RPC_REASON_NONE = 0,
@@ -273,7 +272,7 @@ static const char *reason_message(rpc_reason_t reason)
     case RPC_REASON_UNSUPPORTED_METHOD:
         return "Only printer.gcode.run is supported";
     case RPC_REASON_PRINTER_OFFLINE:
-        return "Requested printer is not the disconnected mock printer";
+        return "Requested printer_id does not match the configured test printer";
     case RPC_REASON_UNCLASSIFIED_GCODE:
         return "G-code is not classified SAFE_READ";
     case RPC_REASON_NONE:
@@ -385,7 +384,32 @@ static bool publish_completed_response(const char *request_id, const char *raw_r
     if ((result == NULL) ||
         (cJSON_AddStringToObject(result, "status", "completed") == NULL) ||
         (cJSON_AddStringToObject(result, "raw_response", raw_response) == NULL) ||
-        (cJSON_AddStringToObject(result, "source", "mock") == NULL)) {
+        (cJSON_AddStringToObject(result, "source", "uart") == NULL)) {
+        cJSON_Delete(root);
+        return false;
+    }
+
+    return enqueue_rpc_json(s_response_topic, root);
+}
+
+static bool publish_failed_response(const char *request_id,
+                                    printer_comm_result_t result,
+                                    const char *raw_response)
+{
+    cJSON *root = create_rpc_envelope(request_id);
+    if (root == NULL) {
+        return false;
+    }
+
+    cJSON *error = cJSON_AddObjectToObject(root, "error");
+    cJSON *data = (error != NULL) ? cJSON_AddObjectToObject(error, "data") : NULL;
+    if ((error == NULL) ||
+        (cJSON_AddStringToObject(error, "code", printer_comm_result_code(result)) == NULL) ||
+        (cJSON_AddStringToObject(error, "message", printer_comm_result_message(result)) == NULL) ||
+        (data == NULL) ||
+        (cJSON_AddStringToObject(data, "status", "failed") == NULL) ||
+        (cJSON_AddStringToObject(data, "raw_response", raw_response) == NULL) ||
+        (cJSON_AddStringToObject(data, "source", "uart") == NULL)) {
         cJSON_Delete(root);
         return false;
     }
@@ -476,7 +500,7 @@ static rpc_reason_t validate_script(const char *script, rpc_script_t *parsed_scr
     return RPC_REASON_NONE;
 }
 
-static bool append_mock_response(char *output, size_t output_size, size_t *used, const char *response)
+static bool append_uart_response(char *output, size_t output_size, size_t *used, const char *response)
 {
     int written = snprintf(output + *used,
                            output_size - *used,
@@ -545,7 +569,7 @@ static void process_request(const rpc_queue_item_t *item)
         return;
     }
 
-    if (strcmp(printer_id->valuestring, MQTT_RPC_PRINTER_ID) != 0) {
+    if (strcmp(printer_id->valuestring, printer_comm_get_printer_id()) != 0) {
         publish_rejected_response(request_id, RPC_REASON_PRINTER_OFFLINE);
         cJSON_Delete(root);
         return;
@@ -567,16 +591,24 @@ static void process_request(const rpc_queue_item_t *item)
     char raw_response[MQTT_RPC_RAW_RESPONSE_SIZE] = {0};
     size_t raw_response_used = 0;
     for (size_t index = 0; index < parsed_script.line_count; index++) {
-        char mock_response[MQTT_RPC_MOCK_RESPONSE_SIZE];
-        esp_err_t err = printer_comm_mock_query(parsed_script.lines[index],
-                                                mock_response,
-                                                sizeof(mock_response));
-        if ((err != ESP_OK) ||
-            !append_mock_response(raw_response,
+        char line_response[MQTT_RPC_LINE_RESPONSE_SIZE] = {0};
+        printer_comm_result_t result = printer_comm_uart_query(parsed_script.lines[index],
+                                                               line_response,
+                                                               sizeof(line_response));
+        if ((line_response[0] != '\0') &&
+            !append_uart_response(raw_response,
                                   sizeof(raw_response),
                                   &raw_response_used,
-                                  mock_response)) {
-            publish_rejected_response(request_id, RPC_REASON_PRINTER_OFFLINE);
+                                  line_response)) {
+            publish_failed_response(request_id,
+                                    PRINTER_COMM_RESPONSE_OVERFLOW,
+                                    raw_response);
+            cJSON_Delete(root);
+            return;
+        }
+
+        if (result != PRINTER_COMM_OK) {
+            publish_failed_response(request_id, result, raw_response);
             cJSON_Delete(root);
             return;
         }

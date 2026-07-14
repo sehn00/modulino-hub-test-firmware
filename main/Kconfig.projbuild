@@ -48,4 +48,39 @@ menu "Modulino test firmware"
         help
             Keepalive interval sent to the broker for LWT failure detection.
 
+    choice MODULINO_PRINTER_UART_BAUD
+        prompt "Printer UART baud rate"
+        default MODULINO_PRINTER_UART_BAUD_115200
+        help
+            Baud rate for the Ender-3 V3 SE Marlin UART connection on UART2.
+            All other Printer UART settings are fixed in the test firmware.
+
+        config MODULINO_PRINTER_UART_BAUD_9600
+            bool "9600"
+
+        config MODULINO_PRINTER_UART_BAUD_19200
+            bool "19200"
+
+        config MODULINO_PRINTER_UART_BAUD_38400
+            bool "38400"
+
+        config MODULINO_PRINTER_UART_BAUD_57600
+            bool "57600"
+
+        config MODULINO_PRINTER_UART_BAUD_115200
+            bool "115200"
+
+        config MODULINO_PRINTER_UART_BAUD_250000
+            bool "250000"
+    endchoice
+
+    config MODULINO_PRINTER_UART_BAUD_RATE
+        int
+        default 9600 if MODULINO_PRINTER_UART_BAUD_9600
+        default 19200 if MODULINO_PRINTER_UART_BAUD_19200
+        default 38400 if MODULINO_PRINTER_UART_BAUD_38400
+        default 57600 if MODULINO_PRINTER_UART_BAUD_57600
+        default 115200 if MODULINO_PRINTER_UART_BAUD_115200
+        default 250000 if MODULINO_PRINTER_UART_BAUD_250000
+
 endmenu

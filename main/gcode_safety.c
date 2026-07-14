@@ -27,7 +27,15 @@ static bool command_equals(const char *gcode, const char *command)
         command++;
     }
 
-    return is_command_boundary(*gcode);
+    if (!is_command_boundary(*gcode)) {
+        return false;
+    }
+
+    while (isspace((unsigned char)*gcode)) {
+        gcode++;
+    }
+
+    return *gcode == '\0';
 }
 
 gcode_safety_t gcode_safety_classify(const char *gcode)
